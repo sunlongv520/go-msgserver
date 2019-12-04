@@ -1,4 +1,4 @@
-module github.com/ichunt2019/go-msgserver
+module github.com/sunlongv520/go-msgserver
 
 go 1.12
 

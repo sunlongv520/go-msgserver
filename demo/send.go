@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 	_ "fmt"
-	"github.com/ichunt2019/go-msgserver/utils/rabbitmq"
+	"github.com/sunlongv520/go-msgserver"
 	"strconv"
 )
 
