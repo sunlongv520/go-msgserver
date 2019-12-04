@@ -1,9 +1,11 @@
 package rabbitmq
 
 import (
+	"errors"
 	"fmt"
 	"github.com/streadway/amqp"
 	"sync"
+	"time"
 )
 
 
@@ -30,6 +32,7 @@ type Receiver interface {
 type RabbitMQ struct {
 	connection *amqp.Connection
 	channel *amqp.Channel
+	dns string
 	queueName   string            // 队列名称
 	routingKey  string            // key名称
 	exchangeName string           // 交换机名称
@@ -47,23 +50,27 @@ type QueueExchange struct {
 	RtKey   string           // key值
 	ExName  string           // 交换机名称
 	ExType  string           // 交换机类型
+	Dns     string			  //链接地址
 }
 
 // 链接rabbitMQ
-func (r *RabbitMQ)mqConnect() {
-	var err error
+func (r *RabbitMQ)mqConnect() (err error){
+	//var err error
 	//RabbitUrl := fmt.Sprintf("amqp://%s:%s@%s:%d/", "guest", "guest", "192.168.2.232", 5672)
 	//mqConn, err = amqp.Dial(RabbitUrl)
-	mqConn, err = amqp.Dial("amqp://guest:guest@192.168.2.232:5672/")
+	mqConn, err = amqp.Dial(r.dns)
 	r.connection = mqConn   // 赋值给RabbitMQ对象
 	if err != nil {
-		fmt.Printf("MQ打开链接失败:%s \n", err)
+		return err
+		//fmt.Printf("MQ打开链接失败:%s \n", err)
 	}
 	mqChan, err = mqConn.Channel()
 	r.channel = mqChan  // 赋值给RabbitMQ对象
 	if err != nil {
-		fmt.Printf("MQ打开管道失败:%s \n", err)
+		return err
+		//fmt.Printf("MQ打开管道失败:%s \n", err)
 	}
+	return err
 }
 
 // 关闭RabbitMQ连接
@@ -86,67 +93,73 @@ func New(q *QueueExchange) *RabbitMQ {
 		routingKey:q.RtKey,
 		exchangeName: q.ExName,
 		exchangeType: q.ExType,
+		dns:q.Dns,
 	}
 }
 
 // 启动RabbitMQ客户端,并初始化
-func (r *RabbitMQ) Start() {
+func (r *RabbitMQ) Start() (err error){
 	// 开启监听生产者发送任务
-	//defer r.mqClose()
 	for _, producer := range r.producerList {
-		//go r.listenProducer(producer)
-		r.listenProducer(producer)
+		err = r.listenProducer(producer)
 	}
-
-	//for _, retryProducer := range r.retryProducerList {
-	//	//go r.listenProducer(producer)
-	//	r.listenRetryProducer(retryProducer)
-	//}
 
 
 	// 开启监听接收者接收任务
 	for _, receiver := range r.receiverList {
+		//r.listenReceiver(receiver)
 		r.wg.Add(1)
 		go func() {
-			r.listenReceiver(receiver)
+			err = r.listenReceiver(receiver)
 		}()
-		 //r.listenReceiver(receiver)
+
 	}
 	r.wg.Wait()
-	//time.Sleep(time.Second)
-	return
+	time.Sleep(time.Microsecond*100)
+	return err
 }
 
-// 注册发送指定队列指定路由的生产者
-func (r *RabbitMQ) RegisterProducer(producer Producer) {
-	r.producerList = append(r.producerList, producer)
+
+
+
+type SendRbmqPro struct {
+	msgContent   string
 }
 
+// 实现生产者
+func (t *SendRbmqPro) MsgContent() string {
+	return t.msgContent
+}
+
+
+
 // 注册发送指定队列指定路由的生产者
-//func (r *RabbitMQ) RegisterRetryProducer(retryProducerList RetryProducer,retry_nums int32) {
-//	r.retryProducerList = append(r.retryProducerList, retryProducerList)
-//}
+func (r *RabbitMQ) RegisterProducer(msg string) {
+	a := &SendRbmqPro{msgContent:msg}
+	a.MsgContent()
+	r.producerList = append(r.producerList, a)
+}
+
+
 
 // 发送任务
-func (r *RabbitMQ) listenProducer(producer Producer) {
-
-
+func (r *RabbitMQ) listenProducer(producer Producer) (err error){
 	// 验证链接是否正常,否则重新链接
 	if r.channel == nil {
-		r.mqConnect()
+		err = r.mqConnect()
+		if err !=nil {
+			return err
+		}
 	}
-
-	err :=  r.channel.ExchangeDeclare(r.exchangeName, r.exchangeType, true, false, false, false, nil)
+	err =  r.channel.ExchangeDeclare(r.exchangeName, r.exchangeType, true, false, false, false, nil)
 	if err != nil {
 		fmt.Printf("MQ注册交换机失败:%s \n", err)
-		return
 	}
 
 
 	_, err = r.channel.QueueDeclare(r.queueName, true, false, false, false, nil)
 	if err != nil {
 		fmt.Printf("MQ注册队列失败:%s \n", err)
-		return
 	}
 
 
@@ -154,7 +167,6 @@ func (r *RabbitMQ) listenProducer(producer Producer) {
 	err = r.channel.QueueBind(r.queueName, r.routingKey, r.exchangeName, true,nil)
 	if err != nil {
 		fmt.Printf("MQ绑定队列失败:%s \n", err)
-		return
 	}
 
 	header := make(map[string]interface{},1)
@@ -170,14 +182,14 @@ func (r *RabbitMQ) listenProducer(producer Producer) {
 
 	if err != nil {
 		fmt.Printf("MQ任务发送失败:%s \n", err)
-		return
 	}
+	return err
 }
 
 
 func (r *RabbitMQ) listenRetryProducer(producer RetryProducer,retry_nums int32 ,args ...string) {
 	fmt.Println("消息处理失败，进入延时队列.....")
-	defer r.mqClose()
+	//defer r.mqClose()
 	// 验证链接是否正常,否则重新链接
 	if r.channel == nil {
 		r.mqConnect()
@@ -199,7 +211,7 @@ func (r *RabbitMQ) listenRetryProducer(producer RetryProducer,retry_nums int32 ,
 	table["x-dead-letter-routing-key"] = oldRoutingKey
 	table["x-dead-letter-exchange"] = oldExchangeName
 
-	table["x-message-ttl"] = int64(15000)
+	table["x-message-ttl"] = int64(20000)
 
 	_, err = r.channel.QueueDeclare(r.queueName, true, false, false, false, table)
 	if err != nil {
@@ -239,37 +251,41 @@ func (r *RabbitMQ) RegisterReceiver(receiver Receiver) {
 	r.mu.Unlock()
 }
 
-// 监听接收者接收任务
-func (r *RabbitMQ) listenReceiver(receiver Receiver) {
+// 监听接收者接收任务 消费者
+func (r *RabbitMQ) listenReceiver(receiver Receiver) (err error) {
 	// 处理结束关闭链接
 	defer r.mqClose()
 	defer r.wg.Done()
 	//defer
 	// 验证链接是否正常
 	if r.channel == nil {
-		r.mqConnect()
+		err = r.mqConnect()
+		if err != nil{
+			return errors.New(fmt.Sprintf("MQ注册队列失败:%s \n", err))
+		}
 	}
 	// 用于检查队列是否存在,已经存在不需要重复声明
-	_, err := r.channel.QueueDeclare(r.queueName, true, false, false, false, nil)
+	_, err = r.channel.QueueDeclare(r.queueName, true, false, false, false, nil)
 	if err != nil {
-		fmt.Printf("MQ注册队列失败:%s \n", err)
-		return
+		return errors.New(fmt.Sprintf("MQ注册队列失败:%s \n", err))
 	}
 	// 绑定任务
 	err =  r.channel.QueueBind(r.queueName, r.routingKey, r.exchangeName, false, nil)
 	if err != nil {
-		fmt.Printf("绑定队列失败:%s \n", err)
-		return
+		return errors.New(fmt.Sprintf("绑定队列失败:%s \n", err))
 	}
 	// 获取消费通道,确保rabbitMQ一个一个发送消息
 	err =  r.channel.Qos(1, 0, false)
 	msgList, err :=  r.channel.Consume(r.queueName, "", false, false, false, false, nil)
 	if err != nil {
-		fmt.Printf("获取消费通道异常:%s \n", err)
-		return
+		return errors.New(fmt.Sprintf("获取消费通道异常:%s \n", err))
 	}
 	for msg := range msgList {
-		retry_nums := msg.Headers["retry_nums"].(int32)
+
+		retry_nums,ok := msg.Headers["retry_nums"].(int32)
+		if(!ok){
+			retry_nums = int32(0)
+		}
 		// 处理数据
 		err := receiver.Consumer(msg.Body)
 		if err!=nil {
@@ -282,20 +298,21 @@ func (r *RabbitMQ) listenReceiver(receiver Receiver) {
 			}
 			err = msg.Ack(true)
 			if err != nil {
-				fmt.Printf("确认消息未完成异常:%s \n", err)
-				return
+				return errors.New(fmt.Sprintf("确认消息未完成异常:%s \n", err))
 			}
 		}else {
 			// 确认消息,必须为false
 			err = msg.Ack(true)
+
 			if err != nil {
-				fmt.Printf("确认消息完成异常:%s \n", err)
-				return
+				return errors.New(fmt.Sprintf("确认消息完成异常:%s \n", err))
 			}
-			return
+			return err
 		}
 	}
+	return
 }
+
 
 
 type retryPro struct {
@@ -317,6 +334,7 @@ func(r *RabbitMQ) retry_msg(Body []byte,retry_nums int32){
 		routingKey,
 		exchangeName,
 		"direct",
+		r.dns,
 	}
 	mq := New(queueExchange)
 	msg := fmt.Sprintf("%s",Body)
